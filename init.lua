@@ -1,27 +1,57 @@
 -- init.lua: Main entry point for godsaved mod
 
+dofile_once("mods/noita-mod-godsaved/files/scripts/snapshot.lua")
+
+local gui = nil
+local _next_id = 100
+
+local function next_id()
+    _next_id = _next_id + 1
+    return _next_id
+end
+
 function OnModInit()
-    -- No file appends needed for the prototype
-    -- Future: append custom perks, spells, etc.
 end
 
 function OnPlayerSpawned(player_entity)
-    -- Guard against adding duplicate GUI components on respawn
-    if GameHasFlagRun("godsaved_gui_init") then return end
-    GameAddFlagRun("godsaved_gui_init")
+    if not gui then
+        gui = GuiCreate()
+    end
+end
 
-    -- Attach GUI rendering script to the player entity
-    EntityAddComponent2(player_entity, "LuaComponent", {
-        script_source_file = "mods/godsaved/files/scripts/gui.lua",
-        execute_every_n_frame = 1,
-    })
+function OnWorldPostUpdate()
+    if not gui then return end
+
+    GuiStartFrame(gui)
+    _next_id = 100
+
+    local has_snapshot = godsaved_has_snapshot()
+
+    -- Buttons in a horizontal row above the inventory bar
+    GuiLayoutBeginHorizontal(gui, 1, 1)
+
+    if GuiButton(gui, 0, 0, "[Snapshot]", next_id()) then
+        godsaved_capture_snapshot()
+    end
+
+    if GuiButton(gui, 0, 0, "[Restore]", next_id()) then
+        godsaved_restore_snapshot()
+    end
+
+    -- Snapshot status indicator
+    if has_snapshot then
+        GuiColorSetForNextWidget(gui, 0.2, 1.0, 0.2, 1.0)
+        GuiText(gui, 0, 0, "SNAP:ON")
+    else
+        GuiColorSetForNextWidget(gui, 0.7, 0.7, 0.7, 0.6)
+        GuiText(gui, 0, 0, "SNAP:OFF")
+    end
+
+    GuiLayoutEnd(gui)
 end
 
 function OnPlayerDied(player_entity)
-    -- Snapshot data persists in GlobalsSetValue across death within a run.
-    -- Future: implement fountain revive logic here.
-    -- For now, just log the death.
     if GlobalsGetValue("godsaved_snapshot_exists", "0") == "1" then
-        GamePrint("Godsaved: You died with an active snapshot. Find a fountain to revive!")
+        GamePrint("Godsaved: You died with an active snapshot!")
     end
 end

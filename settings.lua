@@ -1,6 +1,6 @@
 dofile("data/scripts/lib/mod_settings.lua")
 
-local mod_id = "godsaved"
+local mod_id = "noita-mod-godsaved"
 
 mod_settings_version = 1
 

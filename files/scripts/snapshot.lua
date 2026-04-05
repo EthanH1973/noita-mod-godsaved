@@ -141,6 +141,49 @@ end
 -- CAPTURE: Items (non-wand inventory items)
 -- Captures XML path + material contents for flasks/potions
 -- ============================================================
+-- ============================================================
+-- HELPER: Serialize flask material contents as "name:count,name:count"
+-- Uses CellFactory_GetName to convert material IDs to names for
+-- reliable round-tripping via AddMaterialInventoryMaterial on restore.
+-- ============================================================
+local function serialize_flask_materials(entity_id)
+    local mat_inv = EntityGetFirstComponentIncludingDisabled(entity_id, "MaterialInventoryComponent")
+    if not mat_inv then return "" end
+
+    local counts = ComponentGetValue2(mat_inv, "count_per_material_type")
+    if not counts then return "" end
+
+    -- count_per_material_type returns a table of counts indexed by (material_id + 1).
+    -- We extract non-zero entries as "material_name:count" pairs using
+    -- CellFactory_GetName for reliable round-tripping via AddMaterialInventoryMaterial.
+    local materials = {}
+    if type(counts) == "table" then
+        for i, count in ipairs(counts) do
+            if type(count) == "number" and count > 0 then
+                local mat_name = CellFactory_GetName(i - 1)  -- table is 1-indexed, material IDs are 0-indexed
+                if mat_name and mat_name ~= "" then
+                    table.insert(materials, mat_name .. ":" .. tostring(math.floor(count)))
+                end
+            end
+        end
+    elseif type(counts) == "string" and counts ~= "" then
+        -- Fallback: some Noita versions may return a comma-separated string
+        local mat_id = 0
+        for count_str in counts:gmatch("[^,]+") do
+            local count = tonumber(count_str) or 0
+            if count > 0 then
+                local mat_name = CellFactory_GetName(mat_id)
+                if mat_name and mat_name ~= "" then
+                    table.insert(materials, mat_name .. ":" .. tostring(math.floor(count)))
+                end
+            end
+            mat_id = mat_id + 1
+        end
+    end
+
+    return table.concat(materials, ",")
+end
+
 local function capture_items(player_entity)
     local inv = get_inventory_quick(player_entity)
     if not inv then return "" end
@@ -152,17 +195,8 @@ local function capture_items(player_entity)
         if not is_wand(child) then
             local xml_path = EntityGetFilename(child) or ""
             if xml_path ~= "" then
-                -- Check for material inventory (flasks/potions)
-                local mat_inv = EntityGetFirstComponentIncludingDisabled(child, "MaterialInventoryComponent")
-                local mat_data = ""
-                if mat_inv then
-                    -- Get material counts - this returns a table of counts indexed by material ID
-                    local counts = ComponentGetValue2(mat_inv, "count_per_material_type")
-                    if counts and type(counts) == "string" and counts ~= "" then
-                        mat_data = counts
-                    end
-                end
-                -- Format: xml_path|material_data
+                local mat_data = serialize_flask_materials(child)
+                -- Format: xml_path@@material_data
                 table.insert(item_strings, xml_path .. MAT_SEP .. mat_data)
             end
         end
@@ -203,6 +237,55 @@ local function capture_spells(player_entity)
 end
 
 -- ============================================================
+-- HELPER: Safely convert a ComponentGetValue2 result to a string.
+-- Some fields (stain_effects, ingestion_effects, count_per_material_type)
+-- return tables instead of strings from ComponentGetValue2.
+-- ============================================================
+local function value_to_string(val)
+    if val == nil then return "" end
+    if type(val) == "string" then return val end
+    if type(val) == "table" then
+        -- Convert numeric table to comma-separated string
+        local parts = {}
+        for i, v in ipairs(val) do
+            parts[i] = tostring(v)
+        end
+        return table.concat(parts, ",")
+    end
+    return tostring(val)
+end
+
+-- ============================================================
+-- CAPTURE: Stains (StatusEffectDataComponent gameplay effects)
+-- Visual pixel stains on the player sprite cannot be restored
+-- from Lua, but the gameplay effects (fire extinguish, etc.) can.
+-- Format: "stain_effects;;;ingestion_effects;;;extinguish_prob;;;stain_team"
+-- ============================================================
+local function capture_stains(player_entity)
+    local comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
+    if not comps or #comps == 0 then return "" end
+    local comp = comps[1]
+    local stain_effects = value_to_string(ComponentGetValue2(comp, "stain_effects"))
+    local ingestion_effects = value_to_string(ComponentGetValue2(comp, "ingestion_effects"))
+    local extinguish_prob = ComponentGetValue2(comp, "stain_effects_extinguish_fire_probability") or 0
+    local stain_team = ComponentGetValue2(comp, "stain_team_id") or 0
+    return stain_effects .. EFFECT_SEP .. ingestion_effects .. EFFECT_SEP
+        .. tostring(extinguish_prob) .. EFFECT_SEP .. tostring(stain_team)
+end
+
+-- ============================================================
+-- CAPTURE: Ingestion (materials eaten/drunk by the player)
+-- Eating/drinking materials gives temporary effects (e.g.
+-- worm blood gives worm perk). Tracked on IngestionComponent.
+-- ============================================================
+local function capture_ingestion(player_entity)
+    local comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
+    if not comps or #comps == 0 then return "" end
+    local comp = comps[1]
+    return value_to_string(ComponentGetValue2(comp, "count_per_material_type"))
+end
+
+-- ============================================================
 -- CAPTURE: Player position
 -- ============================================================
 local function capture_position(player_entity)
@@ -238,6 +321,8 @@ function godsaved_capture_snapshot()
     local spell_data = capture_spells(player)
     local perk_data = godsaved_capture_perks()
     local pos_data = capture_position(player)
+    local stain_data = capture_stains(player)
+    local ingestion_data = capture_ingestion(player)
 
     -- Store via GlobalsSetValue
     GlobalsSetValue("godsaved_snapshot_exists", "1")
@@ -249,6 +334,8 @@ function godsaved_capture_snapshot()
     GlobalsSetValue("godsaved_spells", spell_data)
     GlobalsSetValue("godsaved_perks", perk_data)
     GlobalsSetValue("godsaved_position", pos_data)
+    GlobalsSetValue("godsaved_stains", stain_data)
+    GlobalsSetValue("godsaved_ingestion", ingestion_data)
 
     GamePrint("Godsaved: Snapshot saved!")
     return true
@@ -325,21 +412,28 @@ local function clear_effects(player_entity)
 
     -- 3. Clear ingestion/stain material data so the game doesn't re-apply
     --    stain-based effects (bloody, oiled, wet, etc.)
+    --    Note: count_per_material_type may be a table or string type depending
+    --    on the Noita version. We try both approaches to ensure clearing works.
     local ingestion_comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
     if ingestion_comps then
         for _, comp in ipairs(ingestion_comps) do
-            ComponentSetValue2(comp, "count_per_material_type", "")
+            -- Try setting as empty string first, then as empty table
+            pcall(ComponentSetValue2, comp, "count_per_material_type", "")
+            pcall(ComponentSetValue2, comp, "count_per_material_type", {})
         end
     end
 
     -- 4. Clear StatusEffectDataComponent if present (tracks stain effect state)
+    --    stain_effects and ingestion_effects may be table-typed fields.
     local status_data_comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
     if status_data_comps then
         for _, comp in ipairs(status_data_comps) do
             ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", 0)
             ComponentSetValue2(comp, "stain_team_id", 0)
-            ComponentSetValue2(comp, "stain_effects", "")
-            ComponentSetValue2(comp, "ingestion_effects", "")
+            pcall(ComponentSetValue2, comp, "stain_effects", "")
+            pcall(ComponentSetValue2, comp, "stain_effects", {})
+            pcall(ComponentSetValue2, comp, "ingestion_effects", "")
+            pcall(ComponentSetValue2, comp, "ingestion_effects", {})
         end
     end
 end
@@ -379,6 +473,54 @@ local function restore_effects(player_entity, effects_string)
 
         if not sep_start then break end
     end
+end
+
+-- ============================================================
+-- RESTORE: Stains (StatusEffectDataComponent)
+-- Only restores if the restore_stains setting is enabled.
+-- ============================================================
+local function restore_stains(player_entity, stain_string)
+    if stain_string == "" then return end
+
+    -- Parse: stain_effects;;;ingestion_effects;;;extinguish_prob;;;stain_team
+    local parts = {}
+    local pos = 1
+    while true do
+        local sep_start, sep_end = stain_string:find(EFFECT_SEP, pos, true)
+        if sep_start then
+            table.insert(parts, stain_string:sub(pos, sep_start - 1))
+            pos = sep_end + 1
+        else
+            table.insert(parts, stain_string:sub(pos))
+            break
+        end
+    end
+
+    if #parts < 4 then return end
+
+    local comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
+    if not comps or #comps == 0 then return end
+    local comp = comps[1]
+    -- stain_effects and ingestion_effects may be table-typed fields;
+    -- try setting as string first, fall back to table of numbers
+    pcall(ComponentSetValue2, comp, "stain_effects", parts[1])
+    pcall(ComponentSetValue2, comp, "ingestion_effects", parts[2])
+    ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", tonumber(parts[3]) or 0)
+    ComponentSetValue2(comp, "stain_team_id", tonumber(parts[4]) or 0)
+end
+
+-- ============================================================
+-- RESTORE: Ingestion (IngestionComponent material counts)
+-- ============================================================
+local function restore_ingestion(player_entity, ingestion_string)
+    if ingestion_string == "" then return end
+
+    local comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
+    if not comps or #comps == 0 then return end
+    local comp = comps[1]
+    -- count_per_material_type may be a table-typed field;
+    -- try setting as string first, fall back to table
+    pcall(ComponentSetValue2, comp, "count_per_material_type", ingestion_string)
 end
 
 -- ============================================================
@@ -546,6 +688,9 @@ local function restore_items(player_entity, item_string)
         end
     end
 
+    -- Path to our custom flask XML (generated at mod init time in init.lua)
+    local CUSTOM_FLASK_XML = "mods/noita-mod-godsaved/files/entities/godsaved_flask.xml"
+
     for _, entry in ipairs(item_strs) do
         if entry ~= "" then
             -- Parse: xml_path@@material_data
@@ -557,29 +702,34 @@ local function restore_items(player_entity, item_string)
                 mat_data = entry:sub(sep_pos + #MAT_SEP)
             end
 
+            -- Determine which XML to load.
+            -- For flasks (items with saved material data), use our custom flask XML
+            -- whose init script reads from a global instead of randomizing.
+            -- For non-flask items, use the original XML directly.
+            local load_xml = xml_path
+            if mat_data ~= "" then
+                -- Signal to flask_init.lua what materials to fill with
+                GlobalsSetValue("godsaved_flask_restore_materials", mat_data)
+                load_xml = CUSTOM_FLASK_XML
+            end
+
             local item_entity = nil
-            local success, err = pcall(function()
-                item_entity = EntityLoad(xml_path, spawn_x, spawn_y)
-                if item_entity then
-                    -- Restore material contents if present
-                    if mat_data ~= "" then
-                        local mat_inv = EntityGetFirstComponentIncludingDisabled(item_entity, "MaterialInventoryComponent")
-                        if mat_inv then
-                            ComponentSetValue2(mat_inv, "count_per_material_type", mat_data)
-                        end
-                    end
-                    GamePickUpInventoryItem(player_entity, item_entity, false)
-                end
+            local load_ok, load_err = pcall(function()
+                item_entity = EntityLoad(load_xml, spawn_x, spawn_y)
             end)
-            -- Kill orphaned entity if pickup failed
-            if not success then
-                GamePrint("Godsaved: Failed to restore an item: " .. tostring(err))
-                if item_entity and EntityGetIsAlive(item_entity) then
-                    EntityKill(item_entity)
+
+            if not load_ok or not item_entity then
+                -- Clear the global if load failed so it doesn't bleed into the next flask
+                if mat_data ~= "" then
+                    GlobalsSetValue("godsaved_flask_restore_materials", "")
                 end
-            elseif item_entity and not is_in_inventory(player_entity, item_entity) then
-                EntityKill(item_entity)
-                GamePrint("Godsaved: Item cleanup - removed orphaned entity")
+                GamePrint("Godsaved: Failed to load item: " .. tostring(load_err))
+            else
+                local pickup_ok, pickup_err = pcall(GamePickUpInventoryItem, player_entity, item_entity, false)
+                if not pickup_ok then
+                    GamePrint("Godsaved: Failed to pick up item: " .. tostring(pickup_err))
+                    if EntityGetIsAlive(item_entity) then EntityKill(item_entity) end
+                end
             end
         end
     end
@@ -690,6 +840,8 @@ function godsaved_restore_snapshot()
     local spell_data = GlobalsGetValue("godsaved_spells", "")
     local perk_data = GlobalsGetValue("godsaved_perks", "")
     local pos_data = GlobalsGetValue("godsaved_position", "")
+    local stain_data = GlobalsGetValue("godsaved_stains", "")
+    local ingestion_data = GlobalsGetValue("godsaved_ingestion", "")
 
     -- Step 1: Clear current inventory
     clear_inventory(player)
@@ -720,7 +872,15 @@ function godsaved_restore_snapshot()
     -- from spawning are cleared but perk effects won't be wiped
     restore_effects(player, effects_data)
 
-    -- Step 10: Restore perks LAST (if enabled in settings)
+    -- Step 10: Restore stains and ingestion (if enabled in settings)
+    -- Done after effect clearing so we can write back the saved stain/ingestion
+    -- state without it being immediately wiped
+    if ModSettingGet("noita-mod-godsaved.restore_stains") then
+        restore_stains(player, stain_data)
+        restore_ingestion(player, ingestion_data)
+    end
+
+    -- Step 11: Restore perks LAST (if enabled in settings)
     -- Done after effect clearing so perk effects aren't wiped
     if ModSettingGet("noita-mod-godsaved.restore_perks") then
         local restored_count, failed = godsaved_restore_perks(player, perk_data)

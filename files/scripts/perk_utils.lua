@@ -53,6 +53,38 @@ function godsaved_find_perk(perk_id)
     return nil
 end
 
+-- Clear all perk flags and remove permanent perk effects from the player
+-- Called unconditionally during restore to revert to snapshot state
+function godsaved_clear_perks(player_entity)
+    -- Remove all PERK_PICKED flags
+    for _, perk in ipairs(perk_list) do
+        local perk_id = perk.id
+        GameRemoveFlagRun("PERK_PICKED_" .. perk_id)
+        -- Remove numbered flags for stackable perks
+        if perk.stackable == STACKABLE_YES then
+            for n = 2, (perk.stackable_maximum or 128) do
+                local flag = "PERK_PICKED_" .. perk_id .. "_" .. tostring(n)
+                if GameHasFlagRun(flag) then
+                    GameRemoveFlagRun(flag)
+                else
+                    break
+                end
+            end
+        end
+    end
+
+    -- Remove permanent perk game effects (frames == -1) from the player
+    local comps = EntityGetAllComponents(player_entity) or {}
+    for _, comp in ipairs(comps) do
+        if ComponentGetTypeName(comp) == "GameEffectComponent" then
+            local frames = ComponentGetValue2(comp, "frames")
+            if frames == -1 then
+                EntityRemoveComponent(player_entity, comp)
+            end
+        end
+    end
+end
+
 -- Restore perks to the player entity
 -- This calls each perk's func() which may have side effects
 function godsaved_restore_perks(player_entity, perk_string)

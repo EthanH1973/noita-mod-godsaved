@@ -8,7 +8,9 @@ local WAND_SEP = "<<<>>>"  -- between wands
 local ITEM_SEP = "<<<>>>"  -- between items
 local MAT_SEP = "@@"       -- between xml_path and material data within an item
 local CHARGE_SEP = "|||"   -- between wand serialization and spell charges
+local SLOT_SEP = "###"     -- between spell charges and inventory slot index
 local EFFECT_SEP = ";;;"   -- between status effects
+local SPELL_SEP = "<<<>>>" -- between loose spells
 
 -- ============================================================
 -- HELPER: Get a named child entity of the player
@@ -118,7 +120,13 @@ local function capture_wands(player_entity)
                 local serialized = w:Serialize()
                 -- Append spell charges after CHARGE_SEP
                 local charges = capture_spell_charges(child)
-                return serialized .. CHARGE_SEP .. charges
+                -- Capture inventory slot position for ordering
+                local slot = 0
+                local item_comp = EntityGetFirstComponentIncludingDisabled(child, "ItemComponent")
+                if item_comp then
+                    slot = ComponentGetValue2(item_comp, "inventory_slot") or 0
+                end
+                return serialized .. CHARGE_SEP .. charges .. SLOT_SEP .. tostring(slot)
             end)
             if success and result then
                 table.insert(wand_strings, result)
@@ -164,6 +172,48 @@ local function capture_items(player_entity)
 end
 
 -- ============================================================
+-- CAPTURE: Loose spells (inventory_full - spell cards not on wands)
+-- Spells are identified by action_id (not XML path), since they are
+-- created dynamically via CreateItemActionEntity, not from XML files.
+-- Format: "ACTION_ID@@uses_remaining<<<>>>ACTION_ID@@uses_remaining"
+-- ============================================================
+local function capture_spells(player_entity)
+    local inv_full = get_child_by_name(player_entity, "inventory_full")
+    if not inv_full then return "" end
+
+    local children = EntityGetAllChildren(inv_full) or {}
+    local spell_strings = {}
+
+    for _, child in ipairs(children) do
+        local action_comp = EntityGetFirstComponentIncludingDisabled(child, "ItemActionComponent")
+        if action_comp then
+            local action_id = ComponentGetValue2(action_comp, "action_id") or ""
+            if action_id ~= "" then
+                local uses = -1
+                local item_comp = EntityGetFirstComponentIncludingDisabled(child, "ItemComponent")
+                if item_comp then
+                    uses = ComponentGetValue2(item_comp, "uses_remaining") or -1
+                end
+                table.insert(spell_strings, action_id .. MAT_SEP .. tostring(uses))
+            end
+        end
+    end
+
+    return table.concat(spell_strings, SPELL_SEP)
+end
+
+-- ============================================================
+-- CAPTURE: Player position
+-- ============================================================
+local function capture_position(player_entity)
+    local x, y = EntityGetTransform(player_entity)
+    if x and y then
+        return tostring(x) .. ";" .. tostring(y)
+    end
+    return ""
+end
+
+-- ============================================================
 -- CAPTURE SNAPSHOT: Main function
 -- ============================================================
 function godsaved_capture_snapshot()
@@ -185,7 +235,9 @@ function godsaved_capture_snapshot()
     local effects_data = capture_effects(player)
     local wand_data = capture_wands(player)
     local item_data = capture_items(player)
+    local spell_data = capture_spells(player)
     local perk_data = godsaved_capture_perks()
+    local pos_data = capture_position(player)
 
     -- Store via GlobalsSetValue
     GlobalsSetValue("godsaved_snapshot_exists", "1")
@@ -194,7 +246,9 @@ function godsaved_capture_snapshot()
     GlobalsSetValue("godsaved_effects", effects_data)
     GlobalsSetValue("godsaved_wands", wand_data)
     GlobalsSetValue("godsaved_items", item_data)
+    GlobalsSetValue("godsaved_spells", spell_data)
     GlobalsSetValue("godsaved_perks", perk_data)
+    GlobalsSetValue("godsaved_position", pos_data)
 
     GamePrint("Godsaved: Snapshot saved!")
     return true
@@ -238,11 +292,54 @@ end
 -- RESTORE: Status Effects
 -- Removes all current effects, then applies saved ones
 -- ============================================================
+-- Names of child entities that must never be killed during effect cleanup
+local PROTECTED_CHILDREN = {
+    inventory_quick = true, inventory_full = true,
+    arm_r = true, arm_l = true, cape = true,
+}
+
 local function clear_effects(player_entity)
+    -- 1. Remove GameEffectComponents on the player entity itself
     local comps = EntityGetAllComponents(player_entity) or {}
     for _, comp in ipairs(comps) do
         if ComponentGetTypeName(comp) == "GameEffectComponent" then
             EntityRemoveComponent(player_entity, comp)
+        end
+    end
+
+    -- 2. Kill child entities that carry GameEffectComponents
+    --    (effects loaded via LoadGameEffectEntityTo are separate child entities)
+    local children = EntityGetAllChildren(player_entity) or {}
+    for _, child in ipairs(children) do
+        local name = EntityGetName(child) or ""
+        if not PROTECTED_CHILDREN[name] then
+            local child_comps = EntityGetAllComponents(child) or {}
+            for _, comp in ipairs(child_comps) do
+                if ComponentGetTypeName(comp) == "GameEffectComponent" then
+                    EntityKill(child)
+                    break
+                end
+            end
+        end
+    end
+
+    -- 3. Clear ingestion/stain material data so the game doesn't re-apply
+    --    stain-based effects (bloody, oiled, wet, etc.)
+    local ingestion_comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
+    if ingestion_comps then
+        for _, comp in ipairs(ingestion_comps) do
+            ComponentSetValue2(comp, "count_per_material_type", "")
+        end
+    end
+
+    -- 4. Clear StatusEffectDataComponent if present (tracks stain effect state)
+    local status_data_comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
+    if status_data_comps then
+        for _, comp in ipairs(status_data_comps) do
+            ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", 0)
+            ComponentSetValue2(comp, "stain_team_id", 0)
+            ComponentSetValue2(comp, "stain_effects", "")
+            ComponentSetValue2(comp, "ingestion_effects", "")
         end
     end
 end
@@ -370,13 +467,23 @@ local function restore_wands(player_entity, wand_string)
 
     for _, entry in ipairs(wand_strs) do
         if entry ~= "" then
-            -- Split wand serialization from charge data at CHARGE_SEP
+            -- Split wand serialization from charge data and slot index
+            -- Format: serialized|||charges###slot
             local charge_sep_pos = entry:find(CHARGE_SEP, 1, true)
             local serialized = entry
             local charges_string = ""
+            local saved_slot = nil
             if charge_sep_pos then
                 serialized = entry:sub(1, charge_sep_pos - 1)
-                charges_string = entry:sub(charge_sep_pos + #CHARGE_SEP)
+                local rest = entry:sub(charge_sep_pos + #CHARGE_SEP)
+                -- Split charges from slot index
+                local slot_sep_pos = rest:find(SLOT_SEP, 1, true)
+                if slot_sep_pos then
+                    charges_string = rest:sub(1, slot_sep_pos - 1)
+                    saved_slot = tonumber(rest:sub(slot_sep_pos + #SLOT_SEP))
+                else
+                    charges_string = rest
+                end
             end
 
             local wand_entity = nil
@@ -387,7 +494,18 @@ local function restore_wands(player_entity, wand_string)
                 if charges_string ~= "" then
                     restore_spell_charges(wand_entity, charges_string)
                 end
-                w:PutInPlayersInventory()
+                -- Use GamePickUpInventoryItem directly instead of EZWand's
+                -- PutInPlayersInventory, which has a stale child count check
+                -- that fails after clearing inventory in the same frame
+                local item_comp = EntityGetFirstComponentIncludingDisabled(wand_entity, "ItemComponent")
+                if item_comp then
+                    ComponentSetValue2(item_comp, "has_been_picked_by_player", true)
+                    -- Set saved inventory slot position to preserve wand order
+                    if saved_slot then
+                        ComponentSetValue2(item_comp, "inventory_slot", saved_slot)
+                    end
+                end
+                GamePickUpInventoryItem(player_entity, wand_entity, false)
             end)
             -- Kill orphaned entity if pickup failed
             if not success then
@@ -468,6 +586,81 @@ local function restore_items(player_entity, item_string)
 end
 
 -- ============================================================
+-- RESTORE: Loose spells (inventory_full)
+-- Uses CreateItemActionEntity to recreate spells from action_id
+-- ============================================================
+local function restore_spells(player_entity, spell_string)
+    if spell_string == "" then return end
+
+    local px, py = EntityGetTransform(player_entity)
+    local spawn_x, spawn_y = px, py - 1000
+
+    -- Split by SPELL_SEP
+    local spell_strs = {}
+    local pos = 1
+    while true do
+        local sep_start, sep_end = spell_string:find(SPELL_SEP, pos, true)
+        if sep_start then
+            table.insert(spell_strs, spell_string:sub(pos, sep_start - 1))
+            pos = sep_end + 1
+        else
+            table.insert(spell_strs, spell_string:sub(pos))
+            break
+        end
+    end
+
+    for _, entry in ipairs(spell_strs) do
+        if entry ~= "" then
+            local sep_pos = entry:find(MAT_SEP, 1, true)
+            local action_id = entry
+            local uses = -1
+            if sep_pos then
+                action_id = entry:sub(1, sep_pos - 1)
+                uses = tonumber(entry:sub(sep_pos + #MAT_SEP)) or -1
+            end
+
+            local spell_entity = nil
+            local success, err = pcall(function()
+                spell_entity = CreateItemActionEntity(action_id, spawn_x, spawn_y)
+                if spell_entity then
+                    -- Restore uses_remaining
+                    if uses ~= -1 then
+                        local item_comp = EntityGetFirstComponentIncludingDisabled(spell_entity, "ItemComponent")
+                        if item_comp then
+                            ComponentSetValue2(item_comp, "uses_remaining", uses)
+                        end
+                    end
+                    GamePickUpInventoryItem(player_entity, spell_entity, false)
+                end
+            end)
+            if not success then
+                GamePrint("Godsaved: Failed to restore spell " .. action_id .. ": " .. tostring(err))
+                if spell_entity and EntityGetIsAlive(spell_entity) then
+                    EntityKill(spell_entity)
+                end
+            elseif spell_entity and not is_in_inventory(player_entity, spell_entity) then
+                EntityKill(spell_entity)
+                GamePrint("Godsaved: Spell cleanup - removed orphaned entity")
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- RESTORE: Player position
+-- ============================================================
+local function restore_position(player_entity, pos_string)
+    if pos_string == "" then return end
+    local parts = {}
+    for part in pos_string:gmatch("[^;]+") do
+        table.insert(parts, tonumber(part))
+    end
+    if #parts >= 2 and parts[1] and parts[2] then
+        EntitySetTransform(player_entity, parts[1], parts[2])
+    end
+end
+
+-- ============================================================
 -- RESTORE SNAPSHOT: Main function
 -- ============================================================
 function godsaved_restore_snapshot()
@@ -494,7 +687,9 @@ function godsaved_restore_snapshot()
     local effects_data = GlobalsGetValue("godsaved_effects", "")
     local wand_data = GlobalsGetValue("godsaved_wands", "")
     local item_data = GlobalsGetValue("godsaved_items", "")
+    local spell_data = GlobalsGetValue("godsaved_spells", "")
     local perk_data = GlobalsGetValue("godsaved_perks", "")
+    local pos_data = GlobalsGetValue("godsaved_position", "")
 
     -- Step 1: Clear current inventory
     clear_inventory(player)
@@ -505,16 +700,28 @@ function godsaved_restore_snapshot()
     -- Step 3: Restore gold
     restore_gold(player, gold_data)
 
-    -- Step 4: Restore status effects (clears current, applies saved)
-    restore_effects(player, effects_data)
-
-    -- Step 5: Restore wands (with spell charges)
+    -- Step 4: Restore wands (with spell charges and slot positions)
     restore_wands(player, wand_data)
 
-    -- Step 6: Restore items
+    -- Step 5: Restore items
     restore_items(player, item_data)
 
-    -- Step 7: Restore perks (if enabled in settings)
+    -- Step 6: Restore loose spells
+    restore_spells(player, spell_data)
+
+    -- Step 7: Restore player position
+    restore_position(player, pos_data)
+
+    -- Step 8: Clear all current perks (unconditional - always revert to snapshot state)
+    godsaved_clear_perks(player)
+
+    -- Step 9: Restore status effects (clears current + stains, applies saved)
+    -- Done after inventory restore but before perk restore, so stain effects
+    -- from spawning are cleared but perk effects won't be wiped
+    restore_effects(player, effects_data)
+
+    -- Step 10: Restore perks LAST (if enabled in settings)
+    -- Done after effect clearing so perk effects aren't wiped
     if ModSettingGet("noita-mod-godsaved.restore_perks") then
         local restored_count, failed = godsaved_restore_perks(player, perk_data)
         if #failed > 0 then

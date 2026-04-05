@@ -53,6 +53,12 @@ function godsaved_find_perk(perk_id)
     return nil
 end
 
+-- Names of child entities that must never be killed during perk cleanup
+local PERK_PROTECTED_CHILDREN = {
+    inventory_quick = true, inventory_full = true,
+    arm_r = true, arm_l = true, cape = true,
+}
+
 -- Clear all perk flags and remove permanent perk effects from the player
 -- Called unconditionally during restore to revert to snapshot state
 function godsaved_clear_perks(player_entity)
@@ -73,13 +79,33 @@ function godsaved_clear_perks(player_entity)
         end
     end
 
-    -- Remove permanent perk game effects (frames == -1) from the player
+    -- Remove permanent perk game effects (frames == -1) from the player entity
     local comps = EntityGetAllComponents(player_entity) or {}
     for _, comp in ipairs(comps) do
         if ComponentGetTypeName(comp) == "GameEffectComponent" then
             local frames = ComponentGetValue2(comp, "frames")
             if frames == -1 then
                 EntityRemoveComponent(player_entity, comp)
+            end
+        end
+    end
+
+    -- Kill child entities that carry permanent perk effects (frames == -1)
+    -- Perks loaded via LoadGameEffectEntityTo create child entities with
+    -- GameEffectComponents. These must also be removed.
+    local children = EntityGetAllChildren(player_entity) or {}
+    for _, child in ipairs(children) do
+        local name = EntityGetName(child) or ""
+        if not PERK_PROTECTED_CHILDREN[name] then
+            local child_comps = EntityGetAllComponents(child) or {}
+            for _, comp in ipairs(child_comps) do
+                if ComponentGetTypeName(comp) == "GameEffectComponent" then
+                    local frames = ComponentGetValue2(comp, "frames")
+                    if frames == -1 then
+                        EntityKill(child)
+                        break
+                    end
+                end
             end
         end
     end

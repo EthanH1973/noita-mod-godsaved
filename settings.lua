@@ -12,6 +12,13 @@ mod_settings = {
         value_default = false,
         scope = MOD_SETTING_SCOPE_RUNTIME,
     },
+    {
+        id = "restore_stains",
+        ui_name = "Restore Stains & Ingestion",
+        ui_description = "When enabled, restoring a snapshot will also restore stain effects (blood, oil, etc.) and ingestion state (eaten/drunk materials). Visual pixel stains on the player sprite are not restored, only gameplay effects.",
+        value_default = false,
+        scope = MOD_SETTING_SCOPE_RUNTIME,
+    },
 }
 
 function ModSettingsUpdate(init_scope)

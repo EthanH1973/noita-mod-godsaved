@@ -11,6 +11,23 @@ local function next_id()
 end
 
 function OnModInit()
+    -- Build a custom flask entity XML by reading the real potion.xml and
+    -- replacing its randomizing LuaComponent init script with our own.
+    -- This custom XML is used at restore time so EntityLoad fills the flask
+    -- with our saved materials instead of randomizing them.
+    local potion_xml = ModTextFileGetContent("data/entities/items/pickup/potion.xml")
+    if potion_xml and potion_xml ~= "" then
+        -- Replace the LuaComponent's script with our custom flask_init.lua.
+        -- The vanilla script is at data/scripts/items/potion.lua — swap it out.
+        local custom_xml = potion_xml:gsub(
+            'data/scripts/items/potion%.lua',
+            'mods/noita-mod-godsaved/files/scripts/flask_init.lua'
+        )
+        ModTextFileSetContent(
+            "mods/noita-mod-godsaved/files/entities/godsaved_flask.xml",
+            custom_xml
+        )
+    end
 end
 
 function OnPlayerSpawned(player_entity)

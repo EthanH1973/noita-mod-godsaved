@@ -1,4 +1,4 @@
--- perk_utils.lua: Perk capture and restore helpers for godsaved mod
+-- perk_utils.lua: Perk capture and load helpers for godsaved mod
 
 dofile_once("data/scripts/perks/perk_list.lua")
 dofile_once("data/scripts/perks/perk.lua")
@@ -54,13 +54,13 @@ function godsaved_find_perk(perk_id)
 end
 
 -- Names of child entities that must never be killed during perk cleanup
-local PERK_PROTECTED_CHILDREN = {
+local PROTECTED_CHILDREN = {
     inventory_quick = true, inventory_full = true,
     arm_r = true, arm_l = true, cape = true,
 }
 
 -- Clear all perk flags and remove permanent perk effects from the player
--- Called unconditionally during restore to revert to snapshot state
+-- Called unconditionally during load to revert to saved state
 function godsaved_clear_perks(player_entity)
     -- Remove all PERK_PICKED flags
     for _, perk in ipairs(perk_list) do
@@ -96,7 +96,7 @@ function godsaved_clear_perks(player_entity)
     local children = EntityGetAllChildren(player_entity) or {}
     for _, child in ipairs(children) do
         local name = EntityGetName(child) or ""
-        if not PERK_PROTECTED_CHILDREN[name] then
+        if not PROTECTED_CHILDREN[name] then
             local child_comps = EntityGetAllComponents(child) or {}
             for _, comp in ipairs(child_comps) do
                 if ComponentGetTypeName(comp) == "GameEffectComponent" then
@@ -111,9 +111,9 @@ function godsaved_clear_perks(player_entity)
     end
 end
 
--- Restore perks to the player entity
+-- Load perks onto the player entity
 -- This calls each perk's func() which may have side effects
-function godsaved_restore_perks(player_entity, perk_string)
+function godsaved_load_perks(player_entity, perk_string)
     local perks = godsaved_parse_perks(perk_string)
     local restored_count = 0
     local failed = {}

@@ -1,14 +1,14 @@
--- flask_init.lua: Custom init script for godsaved restored flasks.
+-- flask_init.lua: Custom init script for godsaved loaded flasks.
 -- Called instead of the vanilla randomizing potion init script.
--- Reads saved material data from a global set by restore_items()
+-- Reads saved material data from a global set by load_items()
 -- and fills the flask with exact saved contents via AddMaterialInventoryMaterial.
 
 function init(entity_id)
-    local mat_data = GlobalsGetValue("godsaved_flask_restore_materials", "")
+    local mat_data = GlobalsGetValue("godsaved_flask_materials", "")
     if mat_data == "" then return end
 
     -- Clear the global immediately so it doesn't bleed into other flask loads
-    GlobalsSetValue("godsaved_flask_restore_materials", "")
+    GlobalsSetValue("godsaved_flask_materials", "")
 
     -- Parse "material_name:count,material_name:count" and add each material
     for mat_entry in mat_data:gmatch("[^,]+") do

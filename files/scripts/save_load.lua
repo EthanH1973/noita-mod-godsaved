@@ -14,7 +14,7 @@ local SPELL_SEP  = "<<<>>>"  -- between loose spells
 
 local CUSTOM_FLASK_XML = "mods/noita-mod-godsaved/files/entities/godsaved_flask.xml"
 
--- Names of child entities that must never be killed during effect/perk cleanup
+-- Names of child entities that must never be killed during cleanup
 local PROTECTED_CHILDREN = {
     inventory_quick = true, inventory_full = true,
     arm_r = true, arm_l = true, cape = true,
@@ -77,6 +77,10 @@ local function value_to_string(val)
     end
     return tostring(val)
 end
+
+-- ============================================================
+-- Capture helpers (called during godsaved_save)
+-- ============================================================
 
 local function capture_hp(player_entity)
     local dmg = EntityGetFirstComponentIncludingDisabled(player_entity, "DamageModelComponent")
@@ -240,10 +244,10 @@ local function capture_stains(player_entity)
     local comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
     if not comps or #comps == 0 then return "" end
     local comp = comps[1]
-    local stain_effects    = value_to_string(ComponentGetValue2(comp, "stain_effects"))
+    local stain_effects     = value_to_string(ComponentGetValue2(comp, "stain_effects"))
     local ingestion_effects = value_to_string(ComponentGetValue2(comp, "ingestion_effects"))
-    local extinguish_prob  = ComponentGetValue2(comp, "stain_effects_extinguish_fire_probability") or 0
-    local stain_team       = ComponentGetValue2(comp, "stain_team_id") or 0
+    local extinguish_prob   = ComponentGetValue2(comp, "stain_effects_extinguish_fire_probability") or 0
+    local stain_team        = ComponentGetValue2(comp, "stain_team_id") or 0
     return stain_effects .. EFFECT_SEP .. ingestion_effects .. EFFECT_SEP
         .. tostring(extinguish_prob) .. EFFECT_SEP .. tostring(stain_team)
 end
@@ -259,6 +263,10 @@ local function capture_position(player_entity)
     if x and y then return tostring(x) .. ";" .. tostring(y) end
     return ""
 end
+
+-- ============================================================
+-- Save
+-- ============================================================
 
 function godsaved_save()
     local players = EntityGetWithTag("player_unit")
@@ -285,115 +293,9 @@ function godsaved_save()
     return true
 end
 
-local function load_hp(player_entity, hp_string)
-    if hp_string == "" then return end
-    local parts = {}
-    for part in hp_string:gmatch("[^;]+") do table.insert(parts, tonumber(part)) end
-    if #parts < 2 then return end
-
-    local dmg = EntityGetFirstComponentIncludingDisabled(player_entity, "DamageModelComponent")
-    if dmg then
-        ComponentSetValue2(dmg, "max_hp", parts[2])
-        ComponentSetValue2(dmg, "hp", parts[1])
-        if parts[3] then ComponentSetValue2(dmg, "max_hp_cap", parts[3]) end
-    end
-end
-
-local function load_gold(player_entity, gold_string)
-    if gold_string == "" then return end
-    local money = tonumber(gold_string)
-    if not money then return end
-    local wallet = EntityGetFirstComponentIncludingDisabled(player_entity, "WalletComponent")
-    if wallet then ComponentSetValue2(wallet, "money", money) end
-end
-
-local function clear_effects(player_entity)
-    -- Remove GameEffectComponents directly on the player entity
-    local comps = EntityGetAllComponents(player_entity) or {}
-    for _, comp in ipairs(comps) do
-        if ComponentGetTypeName(comp) == "GameEffectComponent" then
-            EntityRemoveComponent(player_entity, comp)
-        end
-    end
-
-    -- Kill child entities carrying GameEffectComponents;
-    -- effects loaded via LoadGameEffectEntityTo live as child entities, not direct components
-    local children = EntityGetAllChildren(player_entity) or {}
-    for _, child in ipairs(children) do
-        local name = EntityGetName(child) or ""
-        if not PROTECTED_CHILDREN[name] then
-            local child_comps = EntityGetAllComponents(child) or {}
-            for _, comp in ipairs(child_comps) do
-                if ComponentGetTypeName(comp) == "GameEffectComponent" then
-                    EntityKill(child)
-                    break
-                end
-            end
-        end
-    end
-
-    -- Clear ingestion material tracking so stain-based effects don't re-apply
-    local ingestion_comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
-    if ingestion_comps then
-        for _, comp in ipairs(ingestion_comps) do
-            clear_field(comp, "count_per_material_type")
-        end
-    end
-
-    -- Clear StatusEffectDataComponent stain state
-    local status_comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
-    if status_comps then
-        for _, comp in ipairs(status_comps) do
-            ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", 0)
-            ComponentSetValue2(comp, "stain_team_id", 0)
-            clear_field(comp, "stain_effects")
-            clear_field(comp, "ingestion_effects")
-        end
-    end
-end
-
-local function load_effects(player_entity, effects_string)
-    clear_effects(player_entity)
-    if effects_string == "" then return end
-
-    for _, entry in ipairs(split_by_sep(effects_string, EFFECT_SEP)) do
-        if entry ~= "" then
-            local colon = entry:find(":", 1, true)
-            if colon then
-                local effect_name = entry:sub(1, colon - 1)
-                local frames = tonumber(entry:sub(colon + 1))
-                if effect_name ~= "" and frames then
-                    local effect_comp = GetGameEffectLoadTo(player_entity, effect_name, true)
-                    if effect_comp then ComponentSetValue2(effect_comp, "frames", frames) end
-                end
-            end
-        end
-    end
-end
-
--- Format: "stain_effects;;;ingestion_effects;;;extinguish_prob;;;stain_team"
-local function load_stains(player_entity, stain_string)
-    if stain_string == "" then return end
-    local parts = split_by_sep(stain_string, EFFECT_SEP)
-    if #parts < 4 then return end
-
-    local comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
-    if not comps or #comps == 0 then return end
-    local comp = comps[1]
-    -- stain_effects and ingestion_effects are table-typed fields; try string first
-    pcall(ComponentSetValue2, comp, "stain_effects", parts[1])
-    pcall(ComponentSetValue2, comp, "ingestion_effects", parts[2])
-    ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", tonumber(parts[3]) or 0)
-    ComponentSetValue2(comp, "stain_team_id", tonumber(parts[4]) or 0)
-end
-
-local function load_ingestion(player_entity, ingestion_string)
-    if ingestion_string == "" then return end
-    local comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
-    if not comps or #comps == 0 then return end
-    -- count_per_material_type is table-typed; try string first
-    pcall(ComponentSetValue2, comps[1], "count_per_material_type", ingestion_string)
-end
+-- ============================================================
+-- Load helpers
+-- ============================================================
 
 local function load_spell_charges(wand_entity, charges_string)
     if charges_string == "" then return end
@@ -409,165 +311,294 @@ local function load_spell_charges(wand_entity, charges_string)
     end
 end
 
-local function clear_inventory(player_entity)
-    local inv_quick = get_inventory_quick(player_entity)
-    if inv_quick then
-        for _, child in ipairs(EntityGetAllChildren(inv_quick) or {}) do EntityKill(child) end
-    end
-    local inv_full = get_child_by_name(player_entity, "inventory_full")
-    if inv_full then
-        for _, child in ipairs(EntityGetAllChildren(inv_full) or {}) do EntityKill(child) end
-    end
-end
-
 local function is_in_inventory(player_entity, entity_id)
     if not EntityGetIsAlive(entity_id) then return false end
     local parent = EntityGetParent(entity_id)
     if not parent or parent == 0 then return false end
     local inv_quick = get_inventory_quick(player_entity)
-    local inv_full = get_child_by_name(player_entity, "inventory_full")
+    local inv_full  = get_child_by_name(player_entity, "inventory_full")
     return parent == inv_quick or parent == inv_full or parent == player_entity
 end
 
-local function load_wands(player_entity, wand_string)
-    if wand_string == "" then return end
-
-    local px, py = EntityGetTransform(player_entity)
-    local spawn_x, spawn_y = px, py - 1000
-
-    for _, entry in ipairs(split_by_sep(wand_string, WAND_SEP)) do
-        if entry ~= "" then
-            -- Format: serialized|||charges###slot
-            local charge_sep_pos = entry:find(CHARGE_SEP, 1, true)
-            local serialized = entry
-            local charges_string = ""
-            local saved_slot = nil
-            if charge_sep_pos then
-                serialized = entry:sub(1, charge_sep_pos - 1)
-                local rest = entry:sub(charge_sep_pos + #CHARGE_SEP)
-                local slot_sep_pos = rest:find(SLOT_SEP, 1, true)
-                if slot_sep_pos then
-                    charges_string = rest:sub(1, slot_sep_pos - 1)
-                    saved_slot = tonumber(rest:sub(slot_sep_pos + #SLOT_SEP))
+-- Phase 1: wipe all current state in a single pass.
+-- Removes perk flags, all GameEffectComponents (temporary and permanent),
+-- stain/ingestion component state, and all inventory children.
+local function clear_all(player_entity)
+    -- Remove all PERK_PICKED flags
+    for _, perk in ipairs(perk_list) do
+        local perk_id = perk.id
+        GameRemoveFlagRun("PERK_PICKED_" .. perk_id)
+        if perk.stackable == STACKABLE_YES then
+            for n = 2, (perk.stackable_maximum or 128) do
+                local flag = "PERK_PICKED_" .. perk_id .. "_" .. tostring(n)
+                if GameHasFlagRun(flag) then
+                    GameRemoveFlagRun(flag)
                 else
-                    charges_string = rest
-                end
-            end
-
-            local wand_entity = nil
-            local success, err = pcall(function()
-                local w = EZWand(serialized, spawn_x, spawn_y)
-                wand_entity = w.entity_id
-                if charges_string ~= "" then load_spell_charges(wand_entity, charges_string) end
-                local item_comp = EntityGetFirstComponentIncludingDisabled(wand_entity, "ItemComponent")
-                if item_comp then
-                    ComponentSetValue2(item_comp, "has_been_picked_by_player", true)
-                    if saved_slot then ComponentSetValue2(item_comp, "inventory_slot", saved_slot) end
-                end
-                -- Use GamePickUpInventoryItem directly; EZWand's PutInPlayersInventory has a
-                -- stale child count check that fails after clearing inventory in the same frame
-                GamePickUpInventoryItem(player_entity, wand_entity, false)
-            end)
-            if not success then
-                GamePrint("Godsaved: Failed to load wand: " .. tostring(err))
-                if wand_entity and EntityGetIsAlive(wand_entity) then EntityKill(wand_entity) end
-            elseif wand_entity and not is_in_inventory(player_entity, wand_entity) then
-                EntityKill(wand_entity)
-                GamePrint("Godsaved: Wand cleanup - removed orphaned entity")
-            end
-        end
-    end
-end
-
-local function load_items(player_entity, item_string)
-    if item_string == "" then return end
-
-    local px, py = EntityGetTransform(player_entity)
-    local spawn_x, spawn_y = px, py - 1000
-
-    for _, entry in ipairs(split_by_sep(item_string, ITEM_SEP)) do
-        if entry ~= "" then
-            local sep_pos = entry:find(MAT_SEP, 1, true)
-            local xml_path = entry
-            local mat_data = ""
-            if sep_pos then
-                xml_path = entry:sub(1, sep_pos - 1)
-                mat_data = entry:sub(sep_pos + #MAT_SEP)
-            end
-
-            -- For flasks (items with saved material data), load our custom flask XML whose
-            -- init script reads from a global instead of randomizing flask contents.
-            local load_xml = xml_path
-            if mat_data ~= "" then
-                GlobalsSetValue("godsaved_flask_materials", mat_data)
-                load_xml = CUSTOM_FLASK_XML
-            end
-
-            local item_entity = nil
-            local load_ok, load_err = pcall(function()
-                item_entity = EntityLoad(load_xml, spawn_x, spawn_y)
-            end)
-
-            if not load_ok or not item_entity then
-                if mat_data ~= "" then GlobalsSetValue("godsaved_flask_materials", "") end
-                GamePrint("Godsaved: Failed to load item: " .. tostring(load_err))
-            else
-                local pickup_ok, pickup_err = pcall(GamePickUpInventoryItem, player_entity, item_entity, false)
-                if not pickup_ok then
-                    GamePrint("Godsaved: Failed to pick up item: " .. tostring(pickup_err))
-                    if EntityGetIsAlive(item_entity) then EntityKill(item_entity) end
+                    break
                 end
             end
         end
     end
+
+    -- Single child pass: kill any child carrying a GameEffectComponent,
+    -- and kill all inventory children. This covers both the perk cleanup
+    -- (frames==-1 children) and the effect cleanup (any-frames children)
+    -- in one iteration instead of two.
+    local children = EntityGetAllChildren(player_entity) or {}
+    for _, child in ipairs(children) do
+        local name = EntityGetName(child) or ""
+        if name == "inventory_quick" or name == "inventory_full" then
+            -- Kill all children of inventory containers
+            for _, item in ipairs(EntityGetAllChildren(child) or {}) do
+                EntityKill(item)
+            end
+        elseif not PROTECTED_CHILDREN[name] then
+            local child_comps = EntityGetAllComponents(child) or {}
+            for _, comp in ipairs(child_comps) do
+                if ComponentGetTypeName(comp) == "GameEffectComponent" then
+                    EntityKill(child)
+                    break
+                end
+            end
+        end
+    end
+
+    -- Remove all GameEffectComponents directly on the player
+    local comps = EntityGetAllComponents(player_entity) or {}
+    for _, comp in ipairs(comps) do
+        if ComponentGetTypeName(comp) == "GameEffectComponent" then
+            EntityRemoveComponent(player_entity, comp)
+        end
+    end
+
+    -- Clear ingestion material tracking
+    local ingestion_comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
+    if ingestion_comps then
+        for _, comp in ipairs(ingestion_comps) do
+            clear_field(comp, "count_per_material_type")
+        end
+    end
+
+    -- Clear stain state
+    local status_comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
+    if status_comps then
+        for _, comp in ipairs(status_comps) do
+            ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", 0)
+            ComponentSetValue2(comp, "stain_team_id", 0)
+            clear_field(comp, "stain_effects")
+            clear_field(comp, "ingestion_effects")
+        end
+    end
 end
 
-local function load_spells(player_entity, spell_string)
-    if spell_string == "" then return end
-
-    local px, py = EntityGetTransform(player_entity)
-    local spawn_x, spawn_y = px, py - 1000
-
-    for _, entry in ipairs(split_by_sep(spell_string, SPELL_SEP)) do
-        if entry ~= "" then
-            local sep_pos = entry:find(MAT_SEP, 1, true)
-            local action_id = entry
-            local uses = -1
-            if sep_pos then
-                action_id = entry:sub(1, sep_pos - 1)
-                uses = tonumber(entry:sub(sep_pos + #MAT_SEP)) or -1
+-- Phase 2a: restore simple player stats — HP, gold, and position.
+-- These three touch separate, independent components and are safe to set in any order.
+local function load_stats(player_entity, hp_string, gold_string, pos_string)
+    -- HP
+    if hp_string ~= "" then
+        local parts = {}
+        for part in hp_string:gmatch("[^;]+") do table.insert(parts, tonumber(part)) end
+        if #parts >= 2 then
+            local dmg = EntityGetFirstComponentIncludingDisabled(player_entity, "DamageModelComponent")
+            if dmg then
+                ComponentSetValue2(dmg, "max_hp", parts[2])
+                ComponentSetValue2(dmg, "hp", parts[1])
+                if parts[3] then ComponentSetValue2(dmg, "max_hp_cap", parts[3]) end
             end
+        end
+    end
 
-            local spell_entity = nil
-            local success, err = pcall(function()
-                spell_entity = CreateItemActionEntity(action_id, spawn_x, spawn_y)
-                if spell_entity then
-                    if uses ~= -1 then
-                        local item_comp = EntityGetFirstComponentIncludingDisabled(spell_entity, "ItemComponent")
-                        if item_comp then ComponentSetValue2(item_comp, "uses_remaining", uses) end
+    -- Gold
+    if gold_string ~= "" then
+        local money = tonumber(gold_string)
+        if money then
+            local wallet = EntityGetFirstComponentIncludingDisabled(player_entity, "WalletComponent")
+            if wallet then ComponentSetValue2(wallet, "money", money) end
+        end
+    end
+
+    -- Position
+    if pos_string ~= "" then
+        local parts = {}
+        for part in pos_string:gmatch("[^;]+") do table.insert(parts, tonumber(part)) end
+        if #parts >= 2 and parts[1] and parts[2] then
+            EntitySetTransform(player_entity, parts[1], parts[2])
+        end
+    end
+end
+
+-- Phase 2b: restore all inventory contents — wands, items, and spells.
+-- EntityGetTransform is called once and spawn coordinates are shared across all three loops.
+local function load_inventory(player_entity, wand_string, item_string, spell_string)
+    local px, py   = EntityGetTransform(player_entity)
+    local spawn_x  = px
+    local spawn_y  = py - 1000
+
+    -- Wands
+    if wand_string ~= "" then
+        for _, entry in ipairs(split_by_sep(wand_string, WAND_SEP)) do
+            if entry ~= "" then
+                local charge_sep_pos = entry:find(CHARGE_SEP, 1, true)
+                local serialized     = entry
+                local charges_string = ""
+                local saved_slot     = nil
+                if charge_sep_pos then
+                    serialized = entry:sub(1, charge_sep_pos - 1)
+                    local rest = entry:sub(charge_sep_pos + #CHARGE_SEP)
+                    local slot_sep_pos = rest:find(SLOT_SEP, 1, true)
+                    if slot_sep_pos then
+                        charges_string = rest:sub(1, slot_sep_pos - 1)
+                        saved_slot     = tonumber(rest:sub(slot_sep_pos + #SLOT_SEP))
+                    else
+                        charges_string = rest
                     end
-                    GamePickUpInventoryItem(player_entity, spell_entity, false)
                 end
-            end)
-            if not success then
-                GamePrint("Godsaved: Failed to load spell " .. action_id .. ": " .. tostring(err))
-                if spell_entity and EntityGetIsAlive(spell_entity) then EntityKill(spell_entity) end
-            elseif spell_entity and not is_in_inventory(player_entity, spell_entity) then
-                EntityKill(spell_entity)
-                GamePrint("Godsaved: Spell cleanup - removed orphaned entity")
+
+                local wand_entity = nil
+                local success, err = pcall(function()
+                    local w = EZWand(serialized, spawn_x, spawn_y)
+                    wand_entity = w.entity_id
+                    if charges_string ~= "" then load_spell_charges(wand_entity, charges_string) end
+                    local item_comp = EntityGetFirstComponentIncludingDisabled(wand_entity, "ItemComponent")
+                    if item_comp then
+                        ComponentSetValue2(item_comp, "has_been_picked_by_player", true)
+                        if saved_slot then ComponentSetValue2(item_comp, "inventory_slot", saved_slot) end
+                    end
+                    GamePickUpInventoryItem(player_entity, wand_entity, false)
+                end)
+                if not success then
+                    GamePrint("Godsaved: Failed to load wand: " .. tostring(err))
+                    if wand_entity and EntityGetIsAlive(wand_entity) then EntityKill(wand_entity) end
+                elseif wand_entity and not is_in_inventory(player_entity, wand_entity) then
+                    EntityKill(wand_entity)
+                    GamePrint("Godsaved: Wand cleanup - removed orphaned entity")
+                end
+            end
+        end
+    end
+
+    -- Items (non-wands, including flasks)
+    if item_string ~= "" then
+        for _, entry in ipairs(split_by_sep(item_string, ITEM_SEP)) do
+            if entry ~= "" then
+                local sep_pos  = entry:find(MAT_SEP, 1, true)
+                local xml_path = entry
+                local mat_data = ""
+                if sep_pos then
+                    xml_path = entry:sub(1, sep_pos - 1)
+                    mat_data = entry:sub(sep_pos + #MAT_SEP)
+                end
+
+                local load_xml = xml_path
+                if mat_data ~= "" then
+                    GlobalsSetValue("godsaved_flask_materials", mat_data)
+                    load_xml = CUSTOM_FLASK_XML
+                end
+
+                local item_entity  = nil
+                local load_ok, load_err = pcall(function()
+                    item_entity = EntityLoad(load_xml, spawn_x, spawn_y)
+                end)
+
+                if not load_ok or not item_entity then
+                    if mat_data ~= "" then GlobalsSetValue("godsaved_flask_materials", "") end
+                    GamePrint("Godsaved: Failed to load item: " .. tostring(load_err))
+                else
+                    local pickup_ok, pickup_err = pcall(GamePickUpInventoryItem, player_entity, item_entity, false)
+                    if not pickup_ok then
+                        GamePrint("Godsaved: Failed to pick up item: " .. tostring(pickup_err))
+                        if EntityGetIsAlive(item_entity) then EntityKill(item_entity) end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Loose spells
+    if spell_string ~= "" then
+        for _, entry in ipairs(split_by_sep(spell_string, SPELL_SEP)) do
+            if entry ~= "" then
+                local sep_pos  = entry:find(MAT_SEP, 1, true)
+                local action_id = entry
+                local uses      = -1
+                if sep_pos then
+                    action_id = entry:sub(1, sep_pos - 1)
+                    uses      = tonumber(entry:sub(sep_pos + #MAT_SEP)) or -1
+                end
+
+                local spell_entity = nil
+                local success, err = pcall(function()
+                    spell_entity = CreateItemActionEntity(action_id, spawn_x, spawn_y)
+                    if spell_entity then
+                        if uses ~= -1 then
+                            local item_comp = EntityGetFirstComponentIncludingDisabled(spell_entity, "ItemComponent")
+                            if item_comp then ComponentSetValue2(item_comp, "uses_remaining", uses) end
+                        end
+                        GamePickUpInventoryItem(player_entity, spell_entity, false)
+                    end
+                end)
+                if not success then
+                    GamePrint("Godsaved: Failed to load spell " .. action_id .. ": " .. tostring(err))
+                    if spell_entity and EntityGetIsAlive(spell_entity) then EntityKill(spell_entity) end
+                elseif spell_entity and not is_in_inventory(player_entity, spell_entity) then
+                    EntityKill(spell_entity)
+                    GamePrint("Godsaved: Spell cleanup - removed orphaned entity")
+                end
             end
         end
     end
 end
 
-local function load_position(player_entity, pos_string)
-    if pos_string == "" then return end
-    local parts = {}
-    for part in pos_string:gmatch("[^;]+") do table.insert(parts, tonumber(part)) end
-    if #parts >= 2 and parts[1] and parts[2] then
-        EntitySetTransform(player_entity, parts[1], parts[2])
+-- Phase 2c: restore temporary status effects.
+-- clear_all already wiped all GameEffectComponents; this function only applies, never clears.
+local function load_effects(player_entity, effects_string)
+    if effects_string == "" then return end
+
+    for _, entry in ipairs(split_by_sep(effects_string, EFFECT_SEP)) do
+        if entry ~= "" then
+            local colon = entry:find(":", 1, true)
+            if colon then
+                local effect_name = entry:sub(1, colon - 1)
+                local frames      = tonumber(entry:sub(colon + 1))
+                if effect_name ~= "" and frames then
+                    local effect_comp = GetGameEffectLoadTo(player_entity, effect_name, true)
+                    if effect_comp then ComponentSetValue2(effect_comp, "frames", frames) end
+                end
+            end
+        end
     end
 end
+
+-- Phase 2d (optional): restore stain and ingestion state.
+-- Format for stain_string: "stain_effects;;;ingestion_effects;;;extinguish_prob;;;stain_team"
+local function load_stains_ingestion(player_entity, stain_string, ingestion_string)
+    -- Stains
+    if stain_string ~= "" then
+        local parts = split_by_sep(stain_string, EFFECT_SEP)
+        if #parts >= 4 then
+            local comps = EntityGetComponentIncludingDisabled(player_entity, "StatusEffectDataComponent")
+            if comps and #comps > 0 then
+                local comp = comps[1]
+                pcall(ComponentSetValue2, comp, "stain_effects",    parts[1])
+                pcall(ComponentSetValue2, comp, "ingestion_effects", parts[2])
+                ComponentSetValue2(comp, "stain_effects_extinguish_fire_probability", tonumber(parts[3]) or 0)
+                ComponentSetValue2(comp, "stain_team_id", tonumber(parts[4]) or 0)
+            end
+        end
+    end
+
+    -- Ingestion
+    if ingestion_string ~= "" then
+        local comps = EntityGetComponentIncludingDisabled(player_entity, "IngestionComponent")
+        if comps and #comps > 0 then
+            pcall(ComponentSetValue2, comps[1], "count_per_material_type", ingestion_string)
+        end
+    end
+end
+
+-- ============================================================
+-- Load
+-- ============================================================
 
 function godsaved_load()
     if GlobalsGetValue("godsaved_save_exists", "0") ~= "1" then
@@ -604,20 +635,16 @@ function godsaved_load()
     local stain_data     = GlobalsGetValue("godsaved_stains",    "")
     local ingestion_data = GlobalsGetValue("godsaved_ingestion", "")
 
-    clear_inventory(player)
-    load_hp(player, hp_data)
-    load_gold(player, gold_data)
-    load_wands(player, wand_data)
-    load_items(player, item_data)
-    load_spells(player, spell_data)
-    load_position(player, pos_data)
-    godsaved_clear_perks(player)
-    -- Effects cleared here; perk load comes after so perk effects aren't immediately wiped
+    -- Phase 1: Wipe current state
+    clear_all(player)
+
+    -- Phase 2: Restore saved state
+    load_stats(player, hp_data, gold_data, pos_data)
+    load_inventory(player, wand_data, item_data, spell_data)
     load_effects(player, effects_data)
 
     if ModSettingGet("noita-mod-godsaved.restore_stains") then
-        load_stains(player, stain_data)
-        load_ingestion(player, ingestion_data)
+        load_stains_ingestion(player, stain_data, ingestion_data)
     end
 
     if ModSettingGet("noita-mod-godsaved.restore_perks") then

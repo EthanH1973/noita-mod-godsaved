@@ -1,0 +1,37 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="Page-1" id="BcfNtcm2J8TuSiTaV6y8">
+    <mxGraphModel dx="1406" dy="780" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-2" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;strokeWidth=2;strokeColor=#1A1A1A;fillColor=#FFFFFF;" value="Player" vertex="1">
+          <mxGeometry height="60" width="120" x="80" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-3" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;strokeWidth=1;strokeColor=#B3B3B3;fillColor=#F5F5F5;" value="System" vertex="1">
+          <mxGeometry height="80" width="160" x="490" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-4" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;strokeWidth=2;strokeColor=#1A1A1A;fillColor=#FFFFFF;" value="Player" vertex="1">
+          <mxGeometry height="60" width="120" x="860" y="310" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-5" parent="1" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;strokeWidth=1;strokeColor=#B3B3B3;fillColor=#F5F5F5;" value="System" vertex="1">
+          <mxGeometry height="80" width="160" x="840" y="490" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-6" parent="1" style="ellipse;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;strokeWidth=2;strokeColor=#2F6F7E;fillColor=#A7DDE8;" value="Game enters&#xa;revival state" vertex="1">
+          <mxGeometry height="90" width="200" x="520" y="485" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-7" edge="1" parent="1" source="N7Gmh7SYXhJxNhPc3AaT-2" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;orthogonalLoop=1;jettySize=auto;strokeWidth=2;" target="N7Gmh7SYXhJxNhPc3AaT-3" value="leave Fountain for the 1st time">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-8" edge="1" parent="1" source="N7Gmh7SYXhJxNhPc3AaT-3" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;orthogonalLoop=1;jettySize=auto;strokeWidth=2;" target="N7Gmh7SYXhJxNhPc3AaT-4" value="snapshot player and game state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-9" edge="1" parent="1" source="N7Gmh7SYXhJxNhPc3AaT-4" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;orthogonalLoop=1;jettySize=auto;strokeWidth=2;" target="N7Gmh7SYXhJxNhPc3AaT-5" value="trigger death event">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="N7Gmh7SYXhJxNhPc3AaT-10" edge="1" parent="1" source="N7Gmh7SYXhJxNhPc3AaT-5" style="endArrow=block;html=1;rounded=0;edgeStyle=orthogonalEdgeStyle;orthogonalLoop=1;jettySize=auto;strokeWidth=2;" target="N7Gmh7SYXhJxNhPc3AaT-6" value="">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
